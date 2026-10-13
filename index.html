@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>蛇 · Snake</title>
+<style>
+  :root {
+    --ai: #1c2540;        /* indigo */
+    --ai-deep: #141b30;
+    --washi: #f3ead8;     /* paper */
+    --washi-dark: #e4d7bc;
+    --sumi: #2a2622;      /* ink */
+    --shu: #c8372d;       /* vermilion */
+    --kin: #c9a227;       /* gold */
+    --muted: #8a7f6c;
+    --mincho: "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "Noto Serif JP", "MS PMincho", serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(circle at 50% 0%, #26315a 0%, transparent 60%),
+      var(--ai-deep);
+    color: var(--washi);
+    font: 16px/1.4 var(--mincho);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .wrap { width: min(480px, 100%); }
+  .frame {
+    border: 3px solid var(--sumi);
+    outline: 2px solid var(--shu);
+    outline-offset: 3px;
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 18px 40px rgba(0,0,0,.45);
+  }
+  .bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    background: var(--washi);
+    color: var(--sumi);
+    border-bottom: 3px solid var(--sumi);
+    padding: 8px 12px;
+  }
+  .bar h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .bar h1 small { font-size: 12px; color: var(--muted); letter-spacing: 2px; }
+  .right { display: flex; align-items: center; gap: 14px; }
+  .scores { display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+  .scores div { display: flex; flex-direction: column; align-items: center; line-height: 1.05; }
+  .scores span { font-size: 11px; color: var(--muted); letter-spacing: 1px; }
+  .scores b { color: var(--shu); font-size: 22px; }
+  #pause {
+    font: inherit;
+    font-size: 13px;
+    background: var(--shu);
+    color: var(--washi);
+    border: 2px solid var(--sumi);
+    border-radius: 3px;
+    padding: 5px 10px;
+    cursor: pointer;
+    min-width: 96px;
+  }
+  #pause:hover { filter: brightness(1.08); }
+  #pause:disabled { opacity: .45; cursor: default; }
+  canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: var(--washi);
+    cursor: pointer;
+  }
+  .help { color: #b9b0a0; font-size: 13px; text-align: center; margin-top: 14px; }
+  kbd {
+    font-family: system-ui, sans-serif;
+    background: var(--washi);
+    color: var(--sumi);
+    border-radius: 3px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+  .help .fuku { color: var(--kin); font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="frame">
+    <div class="bar">
+      <h1>蛇 <small>HEBI</small></h1>
+      <div class="right">
+        <div class="scores">
+          <div><span>得点 SCORE</span><b id="score">0</b></div>
+          <div><span>最高 BEST</span><b id="best">0</b></div>
+        </div>
+        <button id="pause" type="button" disabled>一時停止 ❚❚</button>
+      </div>
+    </div>
+    <canvas id="game" width="400" height="400"></canvas>
+  </div>
+  <p class="help">
+    <kbd>←↑↓→</kbd> / <kbd>WASD</kbd> move · <kbd>Space</kbd> start · <kbd>P</kbd> / <kbd>Esc</kbd> pause<br>
+    Eat <b>onigiri</b> to grow. Catch the gold <span class="fuku">福</span> coin for a random fortune.
+  </p>
+</div>
+
+<script>
+  const GRID = 20;
+  const CELL = 20;
+  const BASE_STEP = 140;   // ms per move at score 0
+  const MIN_STEP = 60;     // speed cap
+  const STEP_PER_POINT = 2.5;
+  const RUSH_FACTOR = 0.6;
+  const SLOW_FACTOR = 1.7;
+
+  const COLORS = {
+    washi: '#f3ead8',
+    sumi: '#2a2622',
+    shu: '#c8372d',
+    ai: '#2e4a7a',
+    kin: '#c9a227',
+    wave: 'rgba(46, 74, 122, 0.10)',
+  };
+  const MINCHO = '"Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "Noto Serif JP", serif';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const pauseBtn = document.getElementById('pause');
+
+  const DIRS = {
+    up:    { x: 0,  y: -1 },
+    down:  { x: 0,  y: 1 },
+    left:  { x: -1, y: 0 },
+    right: { x: 1,  y: 0 },
+  };
+  const KEYMAP = {
+    ArrowUp: 'up', KeyW: 'up',
+    ArrowDown: 'down', KeyS: 'down',
+    ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right',
+  };
+  const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+  const EFFECTS = [
+    { id: 'jackpot', kanji: '大当たり', label: 'Jackpot +5',     color: COLORS.kin },
+    { id: 'rush',    kanji: '疾風',     label: 'Gale · 2× points', color: COLORS.shu },
+    { id: 'slow',    kanji: '静寂',     label: 'Stillness · slow', color: COLORS.ai },
+    { id: 'shrink',  kanji: '縮',       label: 'Shrink',          color: '#7a4f9a' },
+    { id: 'grow',    kanji: '伸',       label: 'Grow +3',         color: '#3f7a4a' },
+  ];
+
+  let snake, dir, queue, growth, food, score, best, state;
+  let mystery, nextMysteryAt, effect, effectUntil, banner, bannerUntil;
+  let clock, acc, lastFrame;
+
+  function loadBest() {
+    try { return parseInt(localStorage.getItem('snake-best'), 10) || 0; }
+    catch { return 0; }
+  }
+  function saveBest() {
+    try { localStorage.setItem('snake-best', String(best)); } catch {}
+  }
+
+  const rand = (min, max) => min + Math.random() * (max - min);
+
+  function emptyCell() {
+    const taken = new Set(snake.map(p => p.x + ',' + p.y));
+    if (food) taken.add(food.x + ',' + food.y);
+    if (mystery) taken.add(mystery.x + ',' + mystery.y);
+    const free = [];
+    for (let y = 0; y < GRID; y++)
+      for (let x = 0; x < GRID; x++)
+        if (!taken.has(x + ',' + y)) free.push({ x, y });
+    return free.length ? free[Math.floor(Math.random() * free.length)] : null;
+  }
+
+  function reset() {
+    snake = [{ x: 9, y: 10 }, { x: 8, y: 10 }, { x: 7, y: 10 }];
+    dir = 'right';
+    queue = [];
+    growth = 0;
+    score = 0;
+    food = null;
+    mystery = null;
+    effect = null;
+    banner = null;
+    clock = 0;
+    acc = 0;
+    nextMysteryAt = rand(5000, 12000);
+    food = emptyCell();
+    updateScore();
+  }
+
+  function updateScore() {
+    scoreEl.textContent = score;
+    bestEl.textContent = best;
+  }
+
+  function addPoints(n) {
+    score += n;
+    if (score > best) { best = score; saveBest(); }
+    updateScore();
+  }
+
+  function stepInterval() {
+    // Gets faster as the score climbs, down to MIN_STEP.
+    const base = Math.max(MIN_STEP, BASE_STEP - score * STEP_PER_POINT);
+    if (effect === 'rush') return base * RUSH_FACTOR;
+    if (effect === 'slow') return base * SLOW_FACTOR;
+    return base;
+  }
+
+  function queueTurn(next) {
+    // Compare against the last direction that will be applied, not the current one,
+    // so two quick presses can't fold the snake back onto itself.
+    const last = queue.length ? queue[queue.length - 1] : dir;
+    if (next === last || next === OPPOSITE[last]) return;
+    if (queue.length < 2) queue.push(next);
+  }
+
+  function applyEffect(e) {
+    banner = e;
+    bannerUntil = clock + 1800;
+    switch (e.id) {
+      case 'jackpot':
+        addPoints(5);
+        break;
+      case 'rush':
+      case 'slow':
+        effect = e.id;
+        effectUntil = clock + 5000;
+        break;
+      case 'shrink':
+        for (let i = 0; i < 3 && snake.length > 3; i++) snake.pop();
+        break;
+      case 'grow':
+        growth += 3;
+        break;
+    }
+  }
+
+  function tick() {
+    if (queue.length) dir = queue.shift();
+    const d = DIRS[dir];
+    const head = { x: snake[0].x + d.x, y: snake[0].y + d.y };
+
+    if (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID) return gameOver();
+
+    const willEat = food && head.x === food.x && head.y === food.y;
+    const growing = growth > 0 || willEat;
+    // The tail moves out of the way this tick unless the snake is growing.
+    const body = growing ? snake : snake.slice(0, -1);
+    if (body.some(p => p.x === head.x && p.y === head.y)) return gameOver();
+
+    snake.unshift(head);
+    if (growth > 0) growth--;
+    else if (!willEat) snake.pop();
+
+    if (willEat) {
+      addPoints(effect === 'rush' ? 2 : 1);
+      food = emptyCell();
+    }
+
+    if (mystery && head.x === mystery.x && head.y === mystery.y) {
+      mystery = null;
+      nextMysteryAt = clock + rand(5000, 12000);
+      applyEffect(EFFECTS[Math.floor(Math.random() * EFFECTS.length)]);
+    }
+
+    if (!food) gameOver(); // board full — you win, technically
+  }
+
+  function updateTimers() {
+    if (effect && clock >= effectUntil) effect = null;
+    if (banner && clock >= bannerUntil) banner = null;
+    if (mystery && clock >= mystery.expires) {
+      mystery = null;
+      nextMysteryAt = clock + rand(5000, 12000);
+    }
+    if (!mystery && clock >= nextMysteryAt) {
+      const cell = emptyCell();
+      if (cell) mystery = { ...cell, born: clock, expires: clock + 6000 };
+      else nextMysteryAt = clock + 2000;
+    }
+  }
+
+  // ---------- state changes ----------
+
+  function setState(next) {
+    state = next;
+    pauseBtn.disabled = state === 'ready' || state === 'over';
+    pauseBtn.textContent = state === 'paused' ? '再開 ▶' : '一時停止 ❚❚';
+    pauseBtn.setAttribute('aria-label', state === 'paused' ? 'Resume' : 'Pause');
+  }
+
+  function gameOver() {
+    setState('over');
+  }
+
+  function togglePause() {
+    if (state === 'running') setState('paused');
+    else if (state === 'paused') setState('running');
+  }
+
+  function startOrRestart() {
+    if (state === 'over') { reset(); setState('running'); }
+    else if (state === 'ready' || state === 'paused') setState('running');
+  }
+
+  // ---------- drawing ----------
+
+  // Seigaiha (blue sea wave) pattern, painted once onto an offscreen canvas.
+  const backdrop = (() => {
+    const c = document.createElement('canvas');
+    c.width = canvas.width;
+    c.height = canvas.height;
+    const g = c.getContext('2d');
+    g.fillStyle = COLORS.washi;
+    g.fillRect(0, 0, c.width, c.height);
+    const r = 20;
+    for (let row = 0, y = 0; y <= c.height + r; row++, y += r / 2) {
+      const offset = row % 2 ? r : 0;
+      for (let x = -r + offset; x <= c.width + r; x += r * 2) {
+        g.fillStyle = COLORS.washi;
+        g.beginPath();
+        g.arc(x, y, r, Math.PI, 0);
+        g.fill();
+        g.strokeStyle = COLORS.wave;
+        g.lineWidth = 1.2;
+        for (const k of [1, 0.72, 0.44]) {
+          g.beginPath();
+          g.arc(x, y, r * k, Math.PI, 0);
+          g.stroke();
+        }
+      }
+    }
+    // faint cell grid
+    g.strokeStyle = 'rgba(42, 38, 34, 0.06)';
+    g.lineWidth = 1;
+    g.beginPath();
+    for (let i = 1; i < GRID; i++) {
+      g.moveTo(i * CELL + 0.5, 0); g.lineTo(i * CELL + 0.5, c.height);
+      g.moveTo(0, i * CELL + 0.5); g.lineTo(c.width, i * CELL + 0.5);
+    }
+    g.stroke();
+    return c;
+  })();
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawSnake() {
+    // Sumi ink that thins toward the tail; tinted while an effect is active.
+    const ink = effect === 'rush' ? [200, 55, 45] : effect === 'slow' ? [46, 74, 122] : [42, 38, 34];
+    const thin = [150, 138, 120];
+    snake.forEach((p, i) => {
+      const t = (i / snake.length) * 0.65;
+      ctx.fillStyle = `rgb(${ink.map((c, k) => Math.round(c + (thin[k] - c) * t)).join(',')})`;
+      roundRect(p.x * CELL + 1, p.y * CELL + 1, CELL - 2, CELL - 2, i === 0 ? 7 : 5);
+      ctx.fill();
+    });
+    // eyes
+    const h = snake[0], d = DIRS[dir];
+    const cx = h.x * CELL + CELL / 2, cy = h.y * CELL + CELL / 2;
+    const px = -d.y, py = d.x;
+    for (const s of [-1, 1]) {
+      const ex = cx + d.x * 3 + px * 4 * s, ey = cy + d.y * 3 + py * 4 * s;
+      ctx.fillStyle = COLORS.washi;
+      ctx.beginPath(); ctx.arc(ex, ey, 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = COLORS.shu;
+      ctx.beginPath(); ctx.arc(ex + d.x, ey + d.y, 1.2, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawFood() {
+    if (!food) return;
+    // Onigiri: rounded rice triangle with a nori band.
+    const cx = food.x * CELL + CELL / 2, top = food.y * CELL + 2;
+    const w = CELL - 3, h = CELL - 4;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = COLORS.sumi;
+    ctx.lineWidth = 1;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, top);
+    ctx.quadraticCurveTo(cx + w / 2 + 1, top + h, cx + w / 2 - 2, top + h);
+    ctx.lineTo(cx - w / 2 + 2, top + h);
+    ctx.quadraticCurveTo(cx - w / 2 - 1, top + h, cx, top);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COLORS.sumi;
+    ctx.fillRect(cx - 3.5, top + h - 7, 7, 7);
+  }
+
+  function drawMystery() {
+    if (!mystery) return;
+    const left = mystery.expires - clock;
+    // blink in the last 1.5 s
+    if (left < 1500 && Math.floor(clock / 120) % 2) return;
+    const pulse = 1 + Math.sin(clock / 120) * 0.1;
+    const cx = mystery.x * CELL + CELL / 2, cy = mystery.y * CELL + CELL / 2;
+    ctx.save();
+    ctx.shadowColor = COLORS.kin;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = COLORS.kin;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (CELL / 2) * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = '#8a6d12';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (CELL / 2 - 2) * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = COLORS.shu;
+    ctx.font = `bold 12px ${MINCHO}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('福', cx, cy + 1);
+  }
+
+  function drawBanner() {
+    if (banner) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.font = `bold 28px ${MINCHO}`;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = COLORS.washi;
+      ctx.strokeText(banner.kanji, canvas.width / 2, 10);
+      ctx.fillStyle = banner.color;
+      ctx.fillText(banner.kanji, canvas.width / 2, 10);
+      ctx.font = `bold 13px ${MINCHO}`;
+      ctx.lineWidth = 3;
+      ctx.strokeText(banner.label, canvas.width / 2, 42);
+      ctx.fillStyle = COLORS.sumi;
+      ctx.fillText(banner.label, canvas.width / 2, 42);
+    }
+    if (effect) {
+      const secs = Math.ceil((effectUntil - clock) / 1000);
+      ctx.font = `12px ${MINCHO}`;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle = effect === 'rush' ? COLORS.shu : COLORS.ai;
+      ctx.fillText(`${effect === 'rush' ? '疾風 Gale' : '静寂 Stillness'} ${secs}s`, canvas.width - 8, canvas.height - 6);
+    }
+  }
+
+  function drawOverlay(kanji, title, sub) {
+    ctx.fillStyle = 'rgba(243, 234, 216, 0.82)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const cx = canvas.width / 2, cy = canvas.height / 2 - 30;
+    // rising sun disc
+    ctx.fillStyle = COLORS.shu;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 62, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.washi;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold 64px ${MINCHO}`;
+    ctx.fillText(kanji, cx, cy + 3);
+    ctx.fillStyle = COLORS.sumi;
+    ctx.font = `bold 22px ${MINCHO}`;
+    ctx.fillText(title, cx, cy + 92);
+    ctx.font = `14px ${MINCHO}`;
+    ctx.fillStyle = '#5c5448';
+    ctx.fillText(sub, cx, cy + 120);
+  }
+
+  function draw() {
+    ctx.drawImage(backdrop, 0, 0);
+    drawFood();
+    drawMystery();
+    drawSnake();
+    drawBanner();
+    if (state === 'ready') drawOverlay('蛇', 'Hebi · Snake', 'Press Space, an arrow key, or click to begin');
+    else if (state === 'paused') drawOverlay('休', '一時停止 · Paused', 'Press P, Esc, Space, or click to resume');
+    else if (state === 'over') drawOverlay('終', `得点 ${score}`, 'Game over — press Space or click to play again');
+  }
+
+  // ---------- loop & input ----------
+
+  function frame(now) {
+    const dt = Math.min(now - (lastFrame ?? now), 100);
+    lastFrame = now;
+    if (state === 'running') {
+      clock += dt;
+      acc += dt;
+      updateTimers();
+      while (acc >= stepInterval() && state === 'running') {
+        acc -= stepInterval();
+        tick();
+      }
+    }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener('keydown', e => {
+    const turn = KEYMAP[e.code];
+    if (turn || e.code === 'Space') e.preventDefault();
+
+    if (e.code === 'Space' || e.code === 'Enter') {
+      startOrRestart();
+      return;
+    }
+    if (e.code === 'KeyP' || e.code === 'Escape') {
+      togglePause();
+      return;
+    }
+    if (!turn) return;
+    if (state === 'ready') setState('running');
+    if (state === 'over') { reset(); setState('running'); }
+    if (state === 'running') queueTurn(turn);
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    togglePause();
+    pauseBtn.blur(); // keep Space from re-triggering the button
+  });
+
+  canvas.addEventListener('click', () => {
+    if (state === 'running') setState('paused');
+    else startOrRestart();
+  });
+
+  // Pause automatically when the tab or window loses focus.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state === 'running') setState('paused');
+  });
+  window.addEventListener('blur', () => {
+    if (state === 'running') setState('paused');
+  });
+
+  best = loadBest();
+  reset();
+  setState('ready');
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
