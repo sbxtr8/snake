@@ -1,0 +1,48 @@
+# Publishes this repo to GitHub Pages every time main changes.
+name: Deploy to GitHub Pages
+
+# WHEN it runs
+on:
+  push:
+    branches: [main]     # every push to main
+  workflow_dispatch:     # plus a "Run workflow" button in the Actions tab
+
+# WHAT it's allowed to do. The workflow gets a temporary token with only these rights.
+permissions:
+  contents: read         # read the repo's files
+  pages: write           # publish to Pages
+  id-token: write        # prove to Pages that this run really came from this repo
+
+# If you push twice quickly, finish the deploy that's already running
+# before starting the next, instead of cancelling it halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Job 1: gather the files and package them for Pages.
+  build:
+    runs-on: ubuntu-latest           # a fresh Linux machine that GitHub provides
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5    # copy the repo's files onto the runner
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v5
+
+      - name: Package the site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: .                    # publish the whole repo folder
+
+  # Job 2: hand that package to Pages to go live.
+  deploy:
+    needs: build                     # wait for build to succeed first
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages             # shows up under "Environments" on the repo page
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
